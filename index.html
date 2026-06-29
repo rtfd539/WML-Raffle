@@ -1,846 +1,163 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Ticket checklist 0001-2000</title>
-<style>
-  :root {
-    --red: #c81e1e;
-    --red-dark: #8f1414;
-    --black: #161616;
-    --white: #ffffff;
-    --offwhite: #f5f3f0;
-    --gray: #6b6b6b;
-    --border-c: #e2deda;
-    --amber: #e8a13a;
-    --amber-dark: #8a5a14;
-    --green: #2f8f4e;
-    --green-dark: #1d5c30;
-  }
-  * { margin: 0; padding: 0; box-sizing: border-box; }
-  body {
-    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
-    background: var(--offwhite);
-    color: var(--black);
-  }
-  .wrap { max-width: 720px; margin: 0 auto; padding-bottom: 32px; }
+/**
+ * WMLC5 Raffle Ticket Checklist — backend
+ * Paste this into Extensions > Apps Script in your Google Sheet,
+ * then deploy as a Web App (see instructions below).
+ *
+ * This script uses 3 sheet tabs as simple key-value stores:
+ *   Status      -> ticket number : "sold" | "given"
+ *   Assignments -> row number    : seller name
+ *   Entries     -> sold ticket records (ticket, amount, time)
+ *
+ * It auto-creates these tabs the first time it runs.
+ */
 
-  .topbar {
-    background: var(--black);
-    padding: 18px 20px;
-    border-bottom: 4px solid var(--red);
-    text-align: center;
+function getSheet(name, headers) {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var sheet = ss.getSheetByName(name);
+  if (!sheet) {
+    sheet = ss.insertSheet(name);
+    sheet.appendRow(headers);
   }
-  .topbar .org {
-    font-size: 11px;
-    color: #c9c9c9;
-    text-transform: uppercase;
-    letter-spacing: 1.2px;
-    font-weight: 600;
-  }
-  .topbar h1 {
-    color: var(--white);
-    font-size: 20px;
-    font-weight: 800;
-    margin-top: 2px;
-  }
-  .topbar h1 span { color: var(--red); }
+  return sheet;
+}
 
-  .sync-bar {
-    text-align: center;
-    font-size: 11px;
-    padding: 6px 0;
-    background: #2a2a2a;
-    color: #b9b9b9;
-  }
-  .sync-bar.bad { background: #5a1a1a; color: #ffd2d2; }
-  .sync-bar.ok { background: #1a3a22; color: #cdf2d6; }
+function readAllRows(sheet) {
+  var data = sheet.getDataRange().getValues();
+  data.shift(); // remove header row
+  return data;
+}
 
-  .stats {
-    display: grid;
-    grid-template-columns: 1fr 1fr 1fr 1fr;
-    gap: 8px;
-    padding: 14px 14px 0;
-  }
-  .stat {
-    background: var(--white);
-    border: 1px solid var(--border-c);
-    border-radius: 10px;
-    padding: 10px 12px;
-    text-align: center;
-  }
-  .stat .lbl {
-    font-size: 10px;
-    font-weight: 700;
-    text-transform: uppercase;
-    letter-spacing: 0.4px;
-    color: var(--gray);
-    margin-bottom: 2px;
-  }
-  .stat .num { font-size: 18px; font-weight: 800; }
-  .stat.sold .num { color: var(--green-dark); }
-  .stat.given .num { color: var(--amber-dark); }
-  .stat.pot .num { color: var(--red-dark); }
-  .stat.company .num { color: var(--black); }
+function jsonResponse(obj) {
+  return ContentService.createTextOutput(JSON.stringify(obj))
+    .setMimeType(ContentService.MimeType.JSON);
+}
 
-  .legend {
-    display: flex;
-    justify-content: center;
-    gap: 16px;
-    padding: 12px 14px 4px;
-    font-size: 12px;
-    color: var(--gray);
-  }
-  .legend-item { display: flex; align-items: center; gap: 6px; }
-  .dot { width: 10px; height: 10px; border-radius: 3px; display: inline-block; }
-  .dot.blank { background: var(--white); border: 1px solid var(--border-c); }
-  .dot.given { background: var(--amber); }
-  .dot.sold { background: var(--green); }
+// Handles GET requests: ?action=getAll
+function doGet(e) {
+  var action = e.parameter.action || 'getAll';
 
-  .search-row {
-    padding: 10px 14px 0;
-  }
-  .search-row input {
-    width: 100%;
-    height: 36px;
-    border: 1px solid var(--border-c);
-    border-radius: 8px;
-    padding: 0 12px;
-    font-size: 14px;
-    font-family: inherit;
-    background: var(--white);
-  }
-  .search-row input:focus { outline: none; border-color: var(--red); }
+  if (action === 'getAll') {
+    var statusSheet = getSheet('Status', ['ticket', 'state']);
+    var assignSheet = getSheet('Assignments', ['row', 'name']);
+    var entriesSheet = getSheet('Entries', ['ticket', 'amount', 'time']);
 
-  .book-list { padding: 12px 14px 0; }
-
-  .book {
-    background: var(--white);
-    border: 1px solid var(--border-c);
-    border-radius: 10px;
-    padding: 10px 10px 8px;
-    margin-bottom: 10px;
-  }
-  .book-head {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    margin-bottom: 8px;
-  }
-  .book-title { font-size: 12px; font-weight: 700; color: var(--gray); }
-  .book-actions { display: flex; gap: 6px; }
-  .bbtn {
-    font-size: 11px;
-    font-weight: 700;
-    border: none;
-    border-radius: 6px;
-    padding: 5px 9px;
-    cursor: pointer;
-    color: var(--white);
-  }
-  .bbtn.given { background: var(--amber); }
-  .bbtn.sold { background: var(--green); }
-  .bbtn.clear { background: var(--gray); }
-  .bbtn:active { transform: scale(0.96); }
-  .bbtn:disabled { opacity: 0.5; cursor: not-allowed; }
-
-  .ticket-row {
-    display: grid;
-    grid-template-columns: repeat(10, 1fr);
-    gap: 4px;
-    border-radius: 6px;
-    padding: 3px;
-  }
-  .ticket-row.row-given {
-    background: #fdf0d9;
-    border: 1px solid var(--amber);
-  }
-  .ticket {
-    aspect-ratio: 1;
-    border: 1px solid var(--border-c);
-    border-radius: 5px;
-    background: var(--offwhite);
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    font-size: 10px;
-    font-weight: 700;
-    color: var(--gray);
-    cursor: pointer;
-    user-select: none;
-    min-height: 28px;
-  }
-  .ticket.given { background: var(--amber); border-color: var(--amber-dark); color: var(--amber-dark); }
-  .ticket.sold { background: var(--green); border-color: var(--green-dark); color: var(--white); }
-  .ticket.dim { opacity: 0.25; }
-  .ticket.pending { opacity: 0.5; }
-
-  .hint {
-    text-align: center;
-    font-size: 11px;
-    color: var(--gray);
-    margin-top: 14px;
-    padding: 0 16px;
-  }
-
-  .loading { text-align: center; color: var(--gray); font-size: 13px; padding: 30px 0; }
-
-  .tabs {
-    display: flex;
-    gap: 6px;
-    padding: 12px 14px 0;
-  }
-  .tab {
-    flex: 1;
-    height: 38px;
-    border: 1px solid var(--border-c);
-    background: var(--white);
-    border-radius: 8px;
-    font-size: 13px;
-    font-weight: 700;
-    color: var(--gray);
-    cursor: pointer;
-  }
-  .tab.active {
-    background: var(--black);
-    color: var(--white);
-    border-color: var(--black);
-  }
-
-  .assign-list { padding: 12px 14px 0; }
-  .assign-row {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    background: var(--white);
-    border: 1px solid var(--border-c);
-    border-radius: 10px;
-    padding: 12px 14px;
-    margin-bottom: 8px;
-  }
-  .assign-left { display: flex; align-items: center; gap: 12px; }
-  .assign-book {
-    background: var(--amber);
-    color: var(--amber-dark);
-    font-size: 12px;
-    font-weight: 700;
-    padding: 5px 10px;
-    border-radius: 6px;
-    min-width: 64px;
-    text-align: center;
-  }
-  .assign-name { font-size: 15px; font-weight: 600; }
-  .assign-range { font-size: 11px; color: var(--gray); margin-top: 1px; }
-  .assign-actions { display: flex; gap: 6px; }
-  .assign-actions button {
-    font-size: 11px;
-    font-weight: 700;
-    border: 1px solid var(--border-c);
-    background: var(--offwhite);
-    border-radius: 6px;
-    padding: 5px 9px;
-    cursor: pointer;
-  }
-
-  .empty-assign {
-    text-align: center;
-    color: var(--gray);
-    font-size: 13px;
-    padding: 24px 0;
-  }
-
-  .modal-overlay {
-    position: static;
-    min-height: 0;
-  }
-  .modal-overlay.show {
-    min-height: 100vh;
-    background: rgba(0,0,0,0.45);
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    padding: 20px;
-  }
-  .modal-box {
-    background: var(--white);
-    border-radius: 12px;
-    padding: 20px;
-    width: 100%;
-    max-width: 320px;
-  }
-  .modal-box h3 { font-size: 15px; margin-bottom: 4px; }
-  .modal-box .modal-sub { font-size: 12px; color: var(--gray); margin-bottom: 12px; }
-  .modal-box input {
-    width: 100%;
-    height: 40px;
-    border: 1px solid var(--border-c);
-    border-radius: 8px;
-    padding: 0 10px;
-    font-size: 15px;
-    font-family: inherit;
-    margin-bottom: 12px;
-  }
-  .modal-box input:focus { outline: none; border-color: var(--red); }
-  .modal-actions { display: flex; gap: 8px; }
-  .modal-actions button {
-    flex: 1;
-    height: 40px;
-    border-radius: 8px;
-    font-size: 14px;
-    font-weight: 700;
-    border: none;
-    cursor: pointer;
-  }
-  .modal-cancel { background: var(--offwhite); color: var(--black); border: 1px solid var(--border-c); }
-  .modal-save { background: var(--red); color: var(--white); }
-
-  .debug-panel {
-    margin: 12px 14px 0;
-    background: var(--black);
-    border-radius: 10px;
-    padding: 10px 12px;
-    font-size: 11px;
-    color: #d6d6d6;
-    font-family: 'SF Mono', Menlo, Consolas, monospace;
-    line-height: 1.5;
-  }
-  .debug-panel .dbg-title {
-    color: var(--white);
-    font-weight: 700;
-    font-size: 11px;
-    margin-bottom: 4px;
-    text-transform: uppercase;
-    letter-spacing: 0.5px;
-  }
-  .debug-panel .dbg-line { display: flex; justify-content: space-between; gap: 8px; }
-  .debug-panel .dbg-ok { color: #6fd17a; }
-  .debug-panel .dbg-bad { color: #ff8a8a; }
-  .debug-panel button {
-    margin-top: 8px;
-    width: 100%;
-    height: 30px;
-    border-radius: 6px;
-    border: none;
-    background: var(--red);
-    color: var(--white);
-    font-weight: 700;
-    font-size: 11px;
-    cursor: pointer;
-  }
-</style>
-</head>
-<body>
-<div class="wrap">
-
-  <div class="topbar">
-    <div class="org">White Meadow Lake Fire Co. 5</div>
-    <h1>Ticket <span>checklist</span> 0001&ndash;2000</h1>
-  </div>
-
-  <div class="sync-bar" id="syncBar">Connecting…</div>
-
-  <div class="stats">
-    <div class="stat sold">
-      <div class="lbl">Sold</div>
-      <div class="num" id="soldCount">0</div>
-    </div>
-    <div class="stat given">
-      <div class="lbl">Given out</div>
-      <div class="num" id="givenCount">0</div>
-    </div>
-    <div class="stat pot">
-      <div class="lbl">Pot from tickets</div>
-      <div class="num" id="potFromTickets">$0</div>
-    </div>
-    <div class="stat company">
-      <div class="lbl">Company keeps</div>
-      <div class="num" id="companyKeeps">$0</div>
-    </div>
-  </div>
-
-  <div class="legend">
-    <div class="legend-item"><span class="dot blank"></span>Available</div>
-    <div class="legend-item"><span class="dot given"></span>Given out</div>
-    <div class="legend-item"><span class="dot sold"></span>Sold</div>
-  </div>
-
-  <div class="search-row">
-    <input type="text" id="searchBox" placeholder="Jump to ticket number, e.g. 0850">
-  </div>
-
-  <div class="tabs">
-    <button class="tab active" id="tabChecklist">Checklist</button>
-    <button class="tab" id="tabAssign">Who has what book</button>
-  </div>
-
-  <div class="book-list" id="bookList"><div class="loading">Loading checklist…</div></div>
-
-  <div class="assign-list" id="assignList" style="display:none;"><div class="loading">Loading…</div></div>
-
-  <div class="hint" id="hintText">Tap any ticket to toggle sold. Book buttons act on all 10 in that row. Sold tickets add $10 each to the shared raffle pot.</div>
-
-  <div class="debug-panel" id="debugPanel">
-    <div class="dbg-title">Sync diagnostics</div>
-    <div class="dbg-line"><span>Backend</span><span id="dbgApi">checking…</span></div>
-    <div class="dbg-line"><span>Last write</span><span id="dbgWrite">none yet</span></div>
-    <div class="dbg-line"><span>Last read</span><span id="dbgRead">none yet</span></div>
-    <div class="dbg-line"><span>Tickets in shared status</span><span id="dbgCount">-</span></div>
-    <button id="forceSyncBtn">Force sync now</button>
-  </div>
-
-</div>
-
-<div class="modal-overlay" id="modalOverlay">
-  <div class="modal-box">
-    <h3 id="modalTitle">Who has this book?</h3>
-    <div class="modal-sub" id="modalSub">Book 1 &middot; #0001&ndash;0010</div>
-    <input type="text" id="modalNameInput" placeholder="Seller name">
-    <div class="modal-actions">
-      <button class="modal-cancel" id="modalCancel">Cancel</button>
-      <button class="modal-save" id="modalSave">Save</button>
-    </div>
-  </div>
-</div>
-<script>
-(function() {
-  var API_URL = 'https://script.google.com/macros/s/AKfycbxT7AtW8i1VXHeCQtrVMxE6A_1LPm8WRePcuwd_52PYCR-hzFxKj_oaEsUTPEJCommi/exec';
-  var TOTAL_TICKETS = 2000;
-  var ROWS = TOTAL_TICKETS / 10;
-
-  var status = {};
-  var entries = [];
-  var assignments = {};
-  var loaded = false;
-  var pendingRow = null;
-  var inFlight = 0;
-
-  function pad4(n) { return String(n).padStart(4, '0'); }
-
-  function fmt(n) {
-    return '$' + Number(n).toLocaleString('en-US', { maximumFractionDigits: 0 });
-  }
-
-  function nowStr() { return new Date().toLocaleTimeString(); }
-
-  function setDbg(id, text, ok) {
-    var el = document.getElementById(id);
-    if (!el) return;
-    el.textContent = text;
-    el.classList.remove('dbg-ok', 'dbg-bad');
-    if (ok === true) el.classList.add('dbg-ok');
-    if (ok === false) el.classList.add('dbg-bad');
-  }
-
-  function setSyncBar(text, mode) {
-    var bar = document.getElementById('syncBar');
-    bar.textContent = text;
-    bar.classList.remove('ok', 'bad');
-    if (mode) bar.classList.add(mode);
-  }
-
-  async function apiGet() {
-    var res = await fetch(API_URL + '?action=getAll', { method: 'GET', redirect: 'follow' });
-    if (!res.ok) throw new Error('HTTP ' + res.status);
-    var data = await res.json();
-    if (!data.ok) throw new Error(data.error || 'unknown error');
-    return data;
-  }
-
-  async function apiPost(payload) {
-    var res = await fetch(API_URL, {
-      method: 'POST',
-      redirect: 'follow',
-      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-      body: JSON.stringify(payload)
+    var status = {};
+    readAllRows(statusSheet).forEach(function(r) {
+      if (r[0] !== '') status[String(r[0])] = r[1];
     });
-    if (!res.ok) throw new Error('HTTP ' + res.status);
-    var data = await res.json();
-    if (!data.ok) throw new Error(data.error || 'unknown error');
-    return data;
-  }
 
-  function buildSkeleton() {
-    var html = '';
-    for (var r = 0; r < ROWS; r++) {
-      var start = r * 10;
-      var end = start + 9;
-      html += '<div class="book" data-row="' + r + '">' +
-        '<div class="book-head">' +
-          '<div class="book-title">Book ' + (r + 1) + ' &middot; #' + pad4(start) + '&ndash;' + pad4(end) + '</div>' +
-          '<div class="book-actions">' +
-            '<button class="bbtn clear" data-row="' + r + '" data-action="clear">Clear all</button>' +
-            '<button class="bbtn given" data-row="' + r + '" data-action="given">Given out</button>' +
-            '<button class="bbtn sold" data-row="' + r + '" data-action="sold">Book sold</button>' +
-          '</div>' +
-        '</div>' +
-        '<div class="ticket-row" data-row="' + r + '">';
-      for (var i = 0; i < 10; i++) {
-        var num = start + i;
-        html += '<div class="ticket" data-num="' + num + '">' + pad4(num) + '</div>';
-      }
-      html += '</div></div>';
-    }
-    document.getElementById('bookList').innerHTML = html;
-  }
-
-  function renderTicketVisuals() {
-    document.querySelectorAll('.ticket').forEach(function(el) {
-      var num = el.getAttribute('data-num');
-      var st = status[num];
-      el.classList.remove('given', 'sold');
-      if (st === 'given') el.classList.add('given');
-      if (st === 'sold') el.classList.add('sold');
+    var assignments = {};
+    readAllRows(assignSheet).forEach(function(r) {
+      if (r[0] !== '') assignments[String(r[0])] = r[1];
     });
-    document.querySelectorAll('.ticket-row').forEach(function(el) {
-      var row = el.getAttribute('data-row');
-      if (assignments[row]) {
-        el.classList.add('row-given');
-      } else {
-        el.classList.remove('row-given');
-      }
+
+    var entries = [];
+    readAllRows(entriesSheet).forEach(function(r) {
+      if (r[0] !== '') entries.push({ ticket: String(r[0]), amount: r[1], time: r[2] });
     });
+
+    return jsonResponse({ ok: true, status: status, assignments: assignments, entries: entries });
   }
 
-  function renderStats() {
-    var soldCount = 0, givenCount = 0;
-    Object.keys(status).forEach(function(k) {
-      if (status[k] === 'sold') soldCount++;
-      if (status[k] === 'given') givenCount++;
-    });
-    document.getElementById('soldCount').textContent = soldCount;
-    document.getElementById('givenCount').textContent = givenCount;
-    document.getElementById('potFromTickets').textContent = fmt(soldCount * 10);
-    document.getElementById('companyKeeps').textContent = fmt((soldCount * 10) / 2);
-    document.getElementById('dbgCount').textContent = Object.keys(status).length;
-  }
+  return jsonResponse({ ok: false, error: 'unknown action' });
+}
 
-  function renderAssignList() {
-    var rows = Object.keys(assignments).map(function(k) { return parseInt(k, 10); }).sort(function(a, b) { return a - b; });
-    var el = document.getElementById('assignList');
-    if (rows.length === 0) {
-      el.innerHTML = '<div class="empty-assign">No books assigned to a seller yet.</div>';
-      return;
+// Handles POST requests: body = { action, ...payload }
+function doPost(e) {
+  var body = JSON.parse(e.postData.contents);
+  var action = body.action;
+  var lock = LockService.getScriptLock();
+  lock.waitLock(10000); // prevent two simultaneous writes from clobbering each other
+
+  try {
+    if (action === 'setTicket') {
+      // payload: { ticket: "0001", state: "sold" | "given" | null }
+      var statusSheet = getSheet('Status', ['ticket', 'state']);
+      setKeyValue(statusSheet, String(body.ticket), body.state);
+      return jsonResponse({ ok: true });
     }
-    el.innerHTML = rows.map(function(r) {
-      var start = r * 10 + 1;
-      var end = start + 9;
-      var name = assignments[String(r)];
-      return '<div class="assign-row">' +
-        '<div class="assign-left">' +
-          '<div class="assign-book">Book ' + (r + 1) + '</div>' +
-          '<div><div class="assign-name">' + escapeHtml(name) + '</div><div class="assign-range">#' + pad4(start) + '&ndash;' + pad4(end) + '</div></div>' +
-        '</div>' +
-        '<div class="assign-actions">' +
-          '<button data-row="' + r + '" data-act="edit">Edit</button>' +
-          '<button data-row="' + r + '" data-act="remove">Remove</button>' +
-        '</div>' +
-      '</div>';
-    }).join('');
-  }
 
-  function escapeHtml(s) {
-    var d = document.createElement('div');
-    d.textContent = s;
-    return d.innerHTML;
-  }
-
-  function render() {
-    renderTicketVisuals();
-    renderStats();
-    renderAssignList();
-  }
-
-  async function loadAll(isManual) {
-    if (inFlight > 0 && !isManual) return;
-    try {
-      setDbg('dbgRead', 'syncing…');
-      var data = await apiGet();
-      status = data.status || {};
-      assignments = data.assignments || {};
-      entries = data.entries || [];
-      setDbg('dbgApi', 'connected', true);
-      setDbg('dbgRead', nowStr() + ' — ok', true);
-      setSyncBar('Synced ' + nowStr(), 'ok');
-      loaded = true;
-      render();
-    } catch (e) {
-      setDbg('dbgApi', 'FAILED', false);
-      setDbg('dbgRead', nowStr() + ' — ' + e.message, false);
-      setSyncBar('Sync failed: ' + e.message, 'bad');
-      loaded = true;
-      render();
-    }
-  }
-
-  function ticketEntryId(num) {
-    return 'ticket-' + pad4(num);
-  }
-
-  async function toggleTicket(num) {
-    var key = String(num);
-    var current = status[key];
-    var ticketStr = pad4(num);
-    inFlight++;
-    try {
-      if (current === 'sold') {
-        delete status[key];
-        entries = entries.filter(function(e) { return e.ticket !== ticketStr; });
-        render();
-        await apiPost({ action: 'setTicket', ticket: ticketStr, state: null });
-        await apiPost({ action: 'removeEntry', ticket: ticketStr });
-      } else {
-        status[key] = 'sold';
-        entries.push({ ticket: ticketStr, amount: 10, time: Date.now() });
-        render();
-        await apiPost({ action: 'setTicket', ticket: ticketStr, state: 'sold' });
-        await apiPost({ action: 'addEntry', ticket: ticketStr, amount: 10, time: Date.now() });
-      }
-      setDbg('dbgWrite', nowStr() + ' — ok', true);
-    } catch (e) {
-      setDbg('dbgWrite', nowStr() + ' — FAILED: ' + e.message, false);
-      setSyncBar('Write failed: ' + e.message, 'bad');
-    } finally {
-      inFlight--;
-    }
-  }
-
-  function markBookGiven(row) {
-    openAssignModal(row);
-  }
-
-  async function confirmBookGiven(row, name) {
-    var start = row * 10;
-    var tickets = [];
-    inFlight++;
-    try {
-      for (var i = 0; i < 10; i++) {
-        var num = start + i;
-        var key = String(num);
-        if (status[key] !== 'sold') {
-          status[key] = 'given';
-          tickets.push(pad4(num));
-        }
-      }
-      assignments[String(row)] = name;
-      render();
-      if (tickets.length) {
-        await apiPost({ action: 'setTicketsBulk', tickets: tickets, state: 'given' });
-      }
-      await apiPost({ action: 'setAssignment', row: String(row), name: name });
-      setDbg('dbgWrite', nowStr() + ' — ok', true);
-    } catch (e) {
-      setDbg('dbgWrite', nowStr() + ' — FAILED: ' + e.message, false);
-      setSyncBar('Write failed: ' + e.message, 'bad');
-    } finally {
-      inFlight--;
-    }
-  }
-
-  async function markBookSold(row) {
-    var start = row * 10;
-    var tickets = [];
-    inFlight++;
-    try {
-      for (var i = 0; i < 10; i++) {
-        var num = start + i;
-        status[String(num)] = 'sold';
-        tickets.push(pad4(num));
-      }
-      render();
-      await apiPost({ action: 'setTicketsBulk', tickets: tickets, state: 'sold' });
-      for (var j = 0; j < tickets.length; j++) {
-        await apiPost({ action: 'addEntry', ticket: tickets[j], amount: 10, time: Date.now() });
-      }
-      setDbg('dbgWrite', nowStr() + ' — ok', true);
-    } catch (e) {
-      setDbg('dbgWrite', nowStr() + ' — FAILED: ' + e.message, false);
-      setSyncBar('Write failed: ' + e.message, 'bad');
-    } finally {
-      inFlight--;
-    }
-  }
-
-  async function clearBook(row) {
-    var start = row * 10;
-    var tickets = [];
-    inFlight++;
-    try {
-      for (var i = 0; i < 10; i++) {
-        var num = start + i;
-        delete status[String(num)];
-        tickets.push(pad4(num));
-      }
-      delete assignments[String(row)];
-      render();
-      await apiPost({ action: 'setTicketsBulk', tickets: tickets, state: null });
-      await apiPost({ action: 'setAssignment', row: String(row), name: null });
-      for (var j = 0; j < tickets.length; j++) {
-        entries = entries.filter(function(e) { return e.ticket !== tickets[j]; });
-        await apiPost({ action: 'removeEntry', ticket: tickets[j] });
-      }
-      setDbg('dbgWrite', nowStr() + ' — ok', true);
-    } catch (e) {
-      setDbg('dbgWrite', nowStr() + ' — FAILED: ' + e.message, false);
-      setSyncBar('Write failed: ' + e.message, 'bad');
-    } finally {
-      inFlight--;
-    }
-  }
-
-  function pad4Range(row) {
-    var start = row * 10;
-    var end = start + 9;
-    return pad4(start) + '\u2013' + pad4(end);
-  }
-
-  function openAssignModal(row) {
-    pendingRow = row;
-    document.getElementById('modalSub').textContent = 'Book ' + (row + 1) + ' \u00b7 #' + pad4Range(row);
-    var existing = assignments[String(row)] || '';
-    var input = document.getElementById('modalNameInput');
-    input.value = existing;
-    document.getElementById('modalOverlay').classList.add('show');
-    setTimeout(function() { input.focus(); }, 50);
-  }
-
-  function closeAssignModal() {
-    document.getElementById('modalOverlay').classList.remove('show');
-    var row = pendingRow;
-    pendingRow = null;
-    return row;
-  }
-
-  function saveAssignModal() {
-    var name = document.getElementById('modalNameInput').value.trim();
-    if (!name || pendingRow === null) {
-      closeAssignModal();
-      return;
-    }
-    var row = pendingRow;
-    confirmBookGiven(row, name);
-    closeAssignModal();
-    goToChecklistBook(row);
-  }
-
-  function goToChecklistBook(row) {
-    document.getElementById('tabChecklist').click();
-    setTimeout(function() {
-      var el = document.querySelector('.ticket-row[data-row="' + row + '"]');
-      if (el) el.scrollIntoView({ behavior: 'smooth', block: 'center' });
-    }, 60);
-  }
-
-  document.getElementById('bookList').addEventListener('click', function(e) {
-    var t = e.target;
-    if (t.classList.contains('ticket')) {
-      toggleTicket(parseInt(t.getAttribute('data-num'), 10));
-      return;
-    }
-    if (t.classList.contains('bbtn')) {
-      var row = parseInt(t.getAttribute('data-row'), 10);
-      var action = t.getAttribute('data-action');
-      if (action === 'given') markBookGiven(row);
-      if (action === 'sold') markBookSold(row);
-      if (action === 'clear') clearBook(row);
-    }
-  });
-
-  document.getElementById('searchBox').addEventListener('input', function(e) {
-    var q = e.target.value.trim().replace(/^0+/, '');
-    document.querySelectorAll('.ticket').forEach(function(el) {
-      if (!q) {
-        el.classList.remove('dim');
-        return;
-      }
-      var num = el.getAttribute('data-num');
-      if (num.indexOf(q) === 0 || num === q) {
-        el.classList.remove('dim');
-      } else {
-        el.classList.add('dim');
-      }
-    });
-    if (q) {
-      var match = document.querySelector('.ticket[data-num="' + q + '"]');
-      if (match) match.scrollIntoView({ behavior: 'smooth', block: 'center' });
-    }
-  });
-
-  buildSkeleton();
-  loadAll();
-  setInterval(function() {
-    if (loaded) loadAll(false);
-  }, 8000);
-
-  document.getElementById('forceSyncBtn').addEventListener('click', function() {
-    loadAll(true);
-  });
-
-  document.getElementById('modalCancel').addEventListener('click', function() {
-    var row = closeAssignModal();
-    if (row !== null) goToChecklistBook(row);
-  });
-  document.getElementById('modalSave').addEventListener('click', saveAssignModal);
-  document.getElementById('modalNameInput').addEventListener('keydown', function(e) {
-    if (e.key === 'Enter') saveAssignModal();
-  });
-
-  var tabChecklist = document.getElementById('tabChecklist');
-  var tabAssign = document.getElementById('tabAssign');
-  var bookListEl = document.getElementById('bookList');
-  var assignListEl = document.getElementById('assignList');
-  var searchRow = document.querySelector('.search-row');
-  var hintText = document.getElementById('hintText');
-
-  tabChecklist.addEventListener('click', function() {
-    tabChecklist.classList.add('active');
-    tabAssign.classList.remove('active');
-    bookListEl.style.display = '';
-    searchRow.style.display = '';
-    assignListEl.style.display = 'none';
-    hintText.textContent = 'Tap any ticket to toggle sold. Book buttons act on all 10 in that row. Sold tickets add $10 each to the shared raffle pot.';
-  });
-
-  tabAssign.addEventListener('click', function() {
-    tabAssign.classList.add('active');
-    tabChecklist.classList.remove('active');
-    assignListEl.style.display = '';
-    bookListEl.style.display = 'none';
-    searchRow.style.display = 'none';
-    hintText.textContent = 'Shows every book marked given out, with who has it. Editing or removing here does not change ticket sold status.';
-  });
-
-  assignListEl.addEventListener('click', function(e) {
-    var btn = e.target.closest('button[data-act]');
-    if (!btn) return;
-    var row = parseInt(btn.getAttribute('data-row'), 10);
-    var act = btn.getAttribute('data-act');
-    if (act === 'edit') {
-      openAssignModal(row);
-    } else if (act === 'remove') {
-      delete assignments[String(row)];
-      var start = row * 10;
-      var toClear = [];
-      for (var i = 0; i < 10; i++) {
-        var key = String(start + i);
-        if (status[key] === 'given') {
-          delete status[key];
-          toClear.push(pad4(start + i));
-        }
-      }
-      render();
-      inFlight++;
-      Promise.all([
-        apiPost({ action: 'setAssignment', row: String(row), name: null }),
-        toClear.length ? apiPost({ action: 'setTicketsBulk', tickets: toClear, state: null }) : Promise.resolve()
-      ]).catch(function(err) {
-        setSyncBar('Write failed: ' + err.message, 'bad');
-      }).finally(function() {
-        inFlight--;
+    if (action === 'setTicketsBulk') {
+      // payload: { tickets: ["0001","0002",...], state: "sold" | "given" | null }
+      var statusSheet2 = getSheet('Status', ['ticket', 'state']);
+      body.tickets.forEach(function(t) {
+        setKeyValue(statusSheet2, String(t), body.state);
       });
+      return jsonResponse({ ok: true });
     }
-  });
-})();
-</script>
-</body>
-</html>
+
+    if (action === 'setAssignment') {
+      // payload: { row: "3", name: "Jane Doe" | null }
+      var assignSheet = getSheet('Assignments', ['row', 'name']);
+      setKeyValue(assignSheet, String(body.row), body.name);
+      return jsonResponse({ ok: true });
+    }
+
+    if (action === 'addEntry') {
+      // payload: { ticket: "0001", amount: 10, time: 169999999 }
+      var entriesSheet = getSheet('Entries', ['ticket', 'amount', 'time']);
+      var existing = readAllRows(entriesSheet);
+      var already = existing.some(function(r) { return keysMatch(r[0], String(body.ticket)); });
+      if (!already) {
+        entriesSheet.appendRow(["'" + body.ticket, body.amount, body.time]);
+      }
+      return jsonResponse({ ok: true });
+    }
+
+    if (action === 'removeEntry') {
+      // payload: { ticket: "0001" }
+      var entriesSheet2 = getSheet('Entries', ['ticket', 'amount', 'time']);
+      removeRowByKey(entriesSheet2, String(body.ticket));
+      return jsonResponse({ ok: true });
+    }
+
+    return jsonResponse({ ok: false, error: 'unknown action: ' + action });
+  } catch (err) {
+    return jsonResponse({ ok: false, error: err.message });
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+// Normalizes a sheet cell value for comparison against a string key.
+// Google Sheets often strips leading zeros from numeric-looking text
+// (e.g. "0007" becomes the number 7), so we compare on the numeric
+// value when possible, falling back to a plain string compare.
+function keysMatch(cellValue, key) {
+  var cellStr = String(cellValue);
+  if (cellStr === key) return true;
+  var cellNum = Number(cellValue);
+  var keyNum = Number(key);
+  if (!isNaN(cellNum) && !isNaN(keyNum) && cellNum === keyNum) return true;
+  return false;
+}
+
+// Sets or deletes a key/value pair in a 2-column sheet (col A = key, col B = value)
+function setKeyValue(sheet, key, value) {
+  var data = sheet.getDataRange().getValues();
+  for (var i = 1; i < data.length; i++) {
+    if (keysMatch(data[i][0], key)) {
+      if (value === null || value === undefined) {
+        sheet.deleteRow(i + 1);
+      } else {
+        sheet.getRange(i + 1, 2).setValue(value);
+      }
+      return;
+    }
+  }
+  if (value !== null && value !== undefined) {
+    // Force the key to be stored as literal text so it round-trips
+    // exactly (preserves leading zeros, avoids number/string mismatches).
+    sheet.appendRow(["'" + key, value]);
+  }
+}
+
+// Removes a row where column A matches key (for Entries sheet)
+function removeRowByKey(sheet, key) {
+  var data = sheet.getDataRange().getValues();
+  for (var i = data.length - 1; i >= 1; i--) {
+    if (keysMatch(data[i][0], key)) {
+      sheet.deleteRow(i + 1);
+    }
+  }
+}
